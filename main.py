@@ -57,7 +57,7 @@ async def ciclo_de_vida(app: FastAPI):
 
 app = FastAPI(
     title="Calculadora API",
-    description="API didactica de 4 operaciones. Historial opcional en Postgres.",
+    description="API didactica de 5 operaciones. Historial opcional en Postgres.",
     version="3.0.0",
     lifespan=ciclo_de_vida,
 )
@@ -199,7 +199,7 @@ app.add_middleware(
 # rechaza solo todo lo que no encaje, con un 422 y un mensaje explicando que
 # campo esta mal.
 
-Operacion = Literal["suma", "resta", "multiplicacion", "division"]
+Operacion = Literal["suma", "resta", "multiplicacion", "division", "potencia"]
 
 # Tabla unica: cada operacion sabe su simbolo y como se calcula.
 # Un solo lugar para agregar una operacion nueva -> un solo lugar donde
@@ -214,7 +214,13 @@ OPERACIONES: dict[str, tuple[str, Callable[[float, float], float]]] = {
     "resta": ("-", lambda a, b: a - b),
     "multiplicacion": ("*", lambda a, b: a * b),
     "division": ("/", lambda a, b: a / b),
+    "potencia": ("^", lambda a, b: a ** b),
 }
+
+DETALLE_RESULTADO_FUERA_DE_RANGO = (
+    "El resultado quedo fuera del rango que puede representar la "
+    "computadora (mas o menos 1.8e308). Probá con numeros mas chicos."
+)
 
 
 class OperacionRequest(BaseModel):
@@ -304,7 +310,7 @@ def calcular(datos: OperacionRequest) -> OperacionResponse:
     Recibe dos numeros y una operacion, devuelve el resultado.
 
     Cuando esta funcion arranca, `datos` YA esta validado: a y b son floats de
-    verdad y operacion es una de las cuatro permitidas. Por eso el cuerpo puede
+    verdad y operacion es una de las permitidas. Por eso el cuerpo puede
     ser tan corto — el trabajo sucio lo hizo Pydantic antes de llegar aca.
     """
     simbolo, calcular_fn = OPERACIONES[datos.operacion]
@@ -316,7 +322,25 @@ def calcular(datos: OperacionRequest) -> OperacionResponse:
         # No es un 500: el servidor esta perfecto, el pedido es el invalido.
         raise HTTPException(status_code=400, detail="No se puede dividir por cero.")
 
-    resultado = calcular_fn(datos.a, datos.b)
+    if datos.operacion == "potencia" and datos.a == 0 and datos.b < 0:
+        raise HTTPException(
+            status_code=400,
+            detail="No se puede elevar cero a un exponente negativo.",
+        )
+
+    if datos.operacion == "potencia" and datos.a < 0 and not datos.b.is_integer():
+        raise HTTPException(
+            status_code=400,
+            detail="No se puede elevar una base negativa a un exponente fraccionario.",
+        )
+
+    try:
+        resultado = calcular_fn(datos.a, datos.b)
+    except OverflowError:
+        raise HTTPException(
+            status_code=400,
+            detail=DETALLE_RESULTADO_FUERA_DE_RANGO,
+        ) from None
 
     # Regla de negocio 2: el resultado tiene que entrar en un float.
     # Los dos operandos pueden ser finitos y perfectamente validos, y aun asi
@@ -331,10 +355,7 @@ def calcular(datos: OperacionRequest) -> OperacionResponse:
     if not math.isfinite(resultado):
         raise HTTPException(
             status_code=400,
-            detail=(
-                "El resultado quedo fuera del rango que puede representar la "
-                "computadora (mas o menos 1.8e308). Probá con numeros mas chicos."
-            ),
+            detail=DETALLE_RESULTADO_FUERA_DE_RANGO,
         )
 
     expresion = f"{datos.a} {simbolo} {datos.b} = {resultado}"
